@@ -1,3 +1,5 @@
+#pragma once
+
 // ====================================================== //
 // ========= API for file system on microSD card ======== //
 // ====================================================== //
@@ -28,7 +30,7 @@ bool writeFile(const char *path, const uint8_t *bytes, size_t size,
         bool append = false);
 bool renameFile(const char *path1, const char *path2);
 bool deleteFile(const char *path);
-bool deleteItem(const char *path);
+bool deleteItem(String path);
 void testFileIO(const char *path);
 void testSD();
 void setupSD();

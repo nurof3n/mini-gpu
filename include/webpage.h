@@ -1,3 +1,5 @@
+#pragma once
+
 const char* webpage = R"V0G0N(<!DOCTYPE html>
 <html>
   <head>
@@ -12,7 +14,7 @@ const char* webpage = R"V0G0N(<!DOCTYPE html>
       }
 
       .container {
-        max-width: 600px;
+        max-width: 700px;
         margin: 0 auto;
         background-color: #fff;
         padding: 20px;
@@ -48,6 +50,11 @@ const char* webpage = R"V0G0N(<!DOCTYPE html>
         border-bottom: 1px solid #ddd;
       }
 
+      td:nth-child(2) {
+        width: 70px; /* Adjust the width as needed */
+        text-align: right;
+      }
+
       th {
         background-color: #f2f2f2;
       }
@@ -68,6 +75,14 @@ const char* webpage = R"V0G0N(<!DOCTYPE html>
         background-color: #45a049;
       }
 
+      .button-draw {
+        background-color: #2196f3;
+      }
+
+      .button-draw:hover {
+        background-color: #0b7dda;
+      }
+
       .button-secondary {
         background-color: #f2f2f2;
         color: #333;
@@ -75,6 +90,14 @@ const char* webpage = R"V0G0N(<!DOCTYPE html>
 
       .button-secondary:hover {
         background-color: #ddd;
+      }
+
+      .button-wipe {
+        background-color: #f44336;
+      }
+
+      .button-wipe:hover {
+        background-color: #d32f2f;
       }
 
       input[type="file"] {
@@ -103,6 +126,7 @@ const char* webpage = R"V0G0N(<!DOCTYPE html>
       <input type="file" id="fileInput" style="display: none" />
       <button class="button" onclick="uploadFile()">Upload</button>
       <button class="button button-secondary" onclick="createDirectory()">Create Directory</button>
+      <button class="button button-wipe" onclick="wipeSDCard()">Wipe SD</button>
     </div>
 
     <script>
@@ -189,9 +213,17 @@ const char* webpage = R"V0G0N(<!DOCTYPE html>
                 name.textContent = file.name;
                 nameCell.appendChild(name);
 
-                sizeCell.textContent = file.size + " KB";
+                sizeCell.textContent = file.size.toString().padStart(6, " ") + " KB";
 
                 var filePath = currentDir + file.name;
+
+                var drawButton = document.createElement("button");
+                drawButton.textContent = "Draw";
+                drawButton.className = "button button-draw";
+                drawButton.addEventListener("click", function () {
+                  handleDraw(filePath);
+                });
+                actionCell.appendChild(drawButton);
 
                 var renameButton = document.createElement("button");
                 renameButton.textContent = "Rename";
@@ -276,6 +308,31 @@ const char* webpage = R"V0G0N(<!DOCTYPE html>
         }
       }
 
+      // Function to wipe the SD card
+      function wipeSDCard() {
+        if (confirm("Are you sure you want to wipe the SD card?")) {
+          fetch("/wipe")
+            .then((response) => response.json())
+            .then((data) => {
+              console.log("SD card wiped successfully");
+              updateFileStructure();
+            })
+            .catch((error) => console.log(error));
+        }
+      }
+
+      // Function to handle image drawing
+      function handleDraw(filename) {
+        console.log(`Drawing image "${filename}"`);
+        fetch("/draw?file=" + filename)
+          .then((response) => response.json())
+          .then((data) => {
+            console.log("File sent for drawing");
+            updateFileStructure();
+          })
+          .catch((error) => console.log(error));
+      }
+
       // Function to handle file rename
       function handleRename(filename) {
         console.log(`Renaming file "${filename}"`);
@@ -323,10 +380,31 @@ const char* webpage = R"V0G0N(<!DOCTYPE html>
           .catch((error) => console.log(error));
       }
 
+      // Function to update monitor details
+      function updateMonitorDetails() {
+        fetch("/monitor")
+          .then((response) => response.json())
+          .then((data) => {
+            var table = document.getElementById("monitorDetails");
+            while (table.rows.length > 1) {
+              table.deleteRow(1);
+            }
+
+            var row = table.insertRow();
+            var widthCell = row.insertCell();
+            var heightCell = row.insertCell();
+
+            widthCell.textContent = data.width;
+            heightCell.textContent = data.height;
+          })
+          .catch((error) => console.log(error));
+      }
+
       // Update storage details and file structure when the page loads
       window.addEventListener("load", function () {
         updateStorageDetails();
         updateFileStructure("/");
+        updateMonitorDetails();
       });
     </script>
   </body>

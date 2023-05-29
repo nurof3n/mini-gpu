@@ -10,11 +10,17 @@
 #include "server.h"
 #include "filesystem.h"
 #include "webpage.h"
+#include "vga.h"
 
 // WiFi and WebServer
 const char *ssid     = "nurof3n";
 const char *password = "nuamchef";
 WebServer   server(80);
+const int   maxUploadIter = 5;  // used to slow down the upload speed to
+                                // avoid watchdog reset
+
+// VGA class
+VGASignal vga(640, 480, (Color *) malloc(640 * 480 * sizeof(Color)));
 
 void handleListDir()
 {
@@ -73,6 +79,25 @@ void handleCreateDir()
     server.send(200, "text/json", "{\"message\":\"Directory created\"}");
 }
 
+void handleDraw()
+{
+    if (!server.hasArg("file")) {
+        server.send(
+                404, "text/json", "{\"message\":\"File not fully specified\"}");
+        return;
+    }
+
+    String filename = server.arg("file");
+    Serial.printf("Drawing file: %s\n", filename.c_str());
+
+    if (!drawFile(filename.c_str())) {
+        server.send(404, "text/json", "{\"message\":\"File not found\"}");
+        return;
+    }
+
+    server.send(200, "text/json", "{\"message\":\"File drawn\"}");
+}
+
 void handleRename()
 {
     if (!server.hasArg("old") || !server.hasArg("new")) {
@@ -107,38 +132,52 @@ void handleStorageDetails()
 
 void handleUpload()
 {
+    static int  iteration = 0;  // used to slow down for watchdog
+    static File uploadFile;
+    HTTPUpload &upload = server.upload();
+
     if (!server.hasArg("dir")) {
         server.send(404, "text/json",
                 "{\"message\":\"Directory not fully specified\"}");
         return;
     }
-
-    HTTPUpload &upload   = server.upload();
-    String      filepath = server.arg("dir") + upload.filename;
+    String filepath = server.arg("dir") + upload.filename;
 
     if (upload.status == UPLOAD_FILE_START) {
-        SD.remove(filepath);
-        Serial.printf("Upload started: %s\n", filepath.c_str());
+        iteration = 0;
+
+        if (SD.exists(filepath.c_str())) {
+            SD.remove(filepath.c_str());
+        }
+
+        uploadFile = SD.open(filepath.c_str(), FILE_WRITE);
+        if (!uploadFile) {
+            server.send(
+                    500, "text/json", "{\"message\":\"File creation failed\"}");
+            return;
+        }
+
+        Serial.println("Upload started for: " + filepath);
     }
     else if (upload.status == UPLOAD_FILE_WRITE) {
-        if (!writeFile(
-                    filepath.c_str(), upload.buf, upload.currentSize, true)) {
-            Serial.printf("Upload failed: %s\n", upload.filename.c_str());
-            server.send(500, "text/json", "{\"message\":\"Upload failed\"}");
+        if (uploadFile) {
+            uploadFile.write(upload.buf, upload.currentSize);
         }
-        else {
-            Serial.printf(
-                    "Upload: %s (%u)\n", filepath.c_str(), upload.totalSize);
+
+        if (++iteration % maxUploadIter == 0) {
+            Serial.printf("Uploaded %d Kbytes so far\n",
+                    sizeInKbytes(upload.totalSize));
+            vTaskDelay(1);
         }
-    }
-    else if (upload.status == UPLOAD_FILE_ABORTED) {
-        Serial.printf("Upload was aborted: %s\n", filepath.c_str());
-        server.send(500, "text/json", "{\"message\":\"Upload aborted\"}");
+
+        iteration %= maxUploadIter;
     }
     else if (upload.status == UPLOAD_FILE_END) {
-        Serial.printf("Upload ended: %s (%d bytes)\n", filepath.c_str(),
-                upload.totalSize);
-        server.send(200, "text/json", "{\"message\":\"Upload successful\"}");
+        if (uploadFile) {
+            uploadFile.close();
+            Serial.println(
+                    "Upload finished: " + String(upload.totalSize) + " bytes");
+        }
     }
 }
 
@@ -186,7 +225,7 @@ void handleDelete()
     Serial.printf("Delete: %s\n", filename.c_str());
 
     if (SD.exists(filename.c_str())) {
-        if (deleteItem(filename.c_str())) {
+        if (deleteItem(filename)) {
             server.send(200, "text/json", "{\"message\":\"File deleted\"}");
         }
         else {
@@ -198,9 +237,27 @@ void handleDelete()
     }
 }
 
+void handleWipe()
+{
+    // Wipe everything from the SD card
+    Serial.println("Wipe SD card");
+
+    auto listing = listDir("/");
+    for (auto &item : listing)
+        if (item.name != "System Volume Information") {
+            deleteItem("/" + item.name);
+        }
+
+    server.send(200, "text/json", "{\"message\":\"SD card wiped\"}");
+}
+
 void handleGetMonitorDetails()
 {
-    server.send(200, "text/plain", "OK");
+    int width, height;
+    vga.getMonitorResolution(&width, &height);
+    server.send(200, "text/json",
+            "{\"width\":" + String(width) + ",\"height\":" + String(height)
+                    + "}");
 }
 
 void serverTask(void *args)
@@ -224,12 +281,20 @@ void serverTask(void *args)
     server.on("/", HTTP_GET, []() { server.send(200, "text/html", webpage); });
     server.on("/listDir", HTTP_GET, handleListDir);
     server.on("/createDir", HTTP_GET, handleCreateDir);
+    server.on("/draw", HTTP_GET, handleDraw);
     server.on("/rename", HTTP_GET, handleRename);
     server.on("/storage", HTTP_GET, handleStorageDetails);
     server.on("/monitor", HTTP_GET, handleGetMonitorDetails);
-    server.on("/update", HTTP_POST, handleUpload);
+    server.on(
+            "/update", HTTP_POST,
+            []() {
+                server.send(200, "text/json",
+                        "{\"message\":\"Upload successful\"}");
+            },
+            handleUpload);
     server.on("/download", HTTP_GET, handleDownload);
     server.on("/delete", HTTP_GET, handleDelete);
+    server.on("/wipe", HTTP_GET, handleWipe);
     server.onNotFound([]() {
         server.send(404, "text/json", "{\"message\":\"Not found\"}");
     });
@@ -239,6 +304,6 @@ void serverTask(void *args)
 
     for (;;) {
         server.handleClient();
-        vTaskDelay(1);  // avoid watchdog reset
+        vTaskDelay(1);
     }
 }

@@ -90,11 +90,11 @@ void displayImageTest()
 
     // open image file
     uint16_t w = 0, h = 0;
-    TJpgDec.getSdJpgSize(&w, &h, "/images.jpg");
+    TJpgDec.getSdJpgSize(&w, &h, "/NUROF3N.jpg");
     Serial.println("Image has size: " + String(w) + "x" + String(h));
 
     // decode and show image
-    TJpgDec.drawSdJpg(0, 0, "/images.jpg");
+    TJpgDec.drawSdJpg(0, 0, "/NUROF3N.jpg");
 }
 
 void setup()

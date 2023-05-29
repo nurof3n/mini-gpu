@@ -128,19 +128,33 @@ bool deleteFile(const char *path)
     return false;
 }
 
-bool deleteItem(const char *path)
+bool deleteItem(String path)
 {
-    if (SD.remove(path)) {
-        Serial.printf("File %s deleted\n", path);
-        return true;
+    File file = SD.open(path);
+    if (!file) {
+        Serial.printf("Failed to open %s\n", path.c_str());
+        return false;
     }
-    if (SD.rmdir(path)) {
-        Serial.printf("Directory %s deleted\n", path);
+
+    if (!file.isDirectory()) {
+        if (SD.remove(path)) {
+            Serial.printf("File %s deleted\n", path.c_str());
+            return true;
+        }
+
+        Serial.printf("Delete failed for %s\n", path.c_str());
         return true;
     }
 
-    Serial.printf("Delete failed for %s\n", path);
-    return false;
+    // Recursively delete all files in the directory
+    auto listing = listDir(path.c_str());
+    bool success = true;
+    for (auto &item : listing) {
+        if (!deleteItem(path + "/" + item.name))
+            success = false;
+    }
+
+    return success && removeDir(path.c_str());
 }
 
 void testFileIO(const char *path)
