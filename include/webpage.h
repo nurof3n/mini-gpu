@@ -109,6 +109,9 @@ const char* webpage = R"V0G0N(<!DOCTYPE html>
     <div class="container">
       <h1>Mini GPU Server</h1>
 
+      <h2>Monitor Details</h2>
+      <p><strong>Resolution:</strong> <span id="resolution"></span></p>
+
       <h2>Storage Details</h2>
       <p><strong>Total space:</strong> <span id="totalSpace"></span></p>
       <p><strong>Used space:</strong> <span id="usedSpace"></span></p>
@@ -385,17 +388,7 @@ const char* webpage = R"V0G0N(<!DOCTYPE html>
         fetch("/monitor")
           .then((response) => response.json())
           .then((data) => {
-            var table = document.getElementById("monitorDetails");
-            while (table.rows.length > 1) {
-              table.deleteRow(1);
-            }
-
-            var row = table.insertRow();
-            var widthCell = row.insertCell();
-            var heightCell = row.insertCell();
-
-            widthCell.textContent = data.width;
-            heightCell.textContent = data.height;
+            document.getElementById("resolution").textContent = data.width + "x" + data.height;
           })
           .catch((error) => console.log(error));
       }

@@ -5,6 +5,8 @@
 // ====================================================== //
 
 #include <DDCVCP.h>
+#include <TFT_eSPI.h>
+#include <PNGdec.h>
 
 struct Color
 {
@@ -27,8 +29,6 @@ struct VGAMode
     double vFrontPorch;
     double vSyncTime;
     double vBackPorch;
-
-    double pixelTime;
 };
 
 struct Image
@@ -37,6 +37,10 @@ struct Image
     int    yres{};
     Color *pixels{};
 
+    Image(int xres = 640, int yres = 480)
+        : xres(xres), yres(yres), pixels(new Color[xres * yres])
+    {}
+
     ~Image()
     {
         delete[] pixels;
@@ -44,6 +48,7 @@ struct Image
 
     void loadPixels(int xres, int yres, Color *pixels)
     {
+        delete[] this->pixels;
         this->xres   = xres;
         this->yres   = yres;
         this->pixels = pixels;
@@ -53,44 +58,120 @@ struct Image
     {
         return pixels[y * xres + x];
     }
-};
-extern Image image;
 
+    void set(int x, int y, Color c)
+    {
+        pixels[y * xres + x] = c;
+    }
+};
+
+
+extern Image         image;
+extern TFT_eSPI      tft;
+extern const VGAMode VGA480p;
+
+extern const int      hsyncPin;
+extern const int      vsyncPin;
+extern const int      blankPin;
+extern const int      dacClkPin;
+extern const int      syncPin;
+extern const int      ddcSdaPin;
+extern const int      ddcSclPin;
+extern const int      leBPin;
+extern const int      leGPin;
+extern const int      leRPin;
+extern const int      colorPins[8];
+extern const int      colorPinsMask;
+extern int            xres, xcrt;
+extern int            yres, ycrt;
+extern hw_timer_t    *hPixelTimer;
+extern hw_timer_t    *hSyncTimer;
+extern hw_timer_t    *vSyncTimer;
+extern hw_timer_t    *clkTimer;
+extern const uint64_t pixelTicks;
+extern uint64_t       crtTicks;
+extern uint64_t       ticksElapsed;
+extern int            dacClk;
+
+void IRAM_ATTR writeByteToRegister(int latch, unsigned char byte);
+void IRAM_ATTR writePixel();
+void IRAM_ATTR hSyncInt();
+void IRAM_ATTR vSyncInt();
+void           tftInit();
+void           drawPng(PNGDRAW *pDraw);
+bool           decodePng(const char *filepath);
 
 class VGASignal
 {
 private:
-    DDCVCP               ddc;
-    static const VGAMode VGA480p;
+    DDCVCP ddc;
 
 public:
     VGASignal()
     {
         // Start DDC communication
-        while (!ddc.begin(DDC_SDA, DDC_SCL)) {
-            Serial.println("Unable to find DDC/CI");
-            delay(1000);
-        }
+        // if (!ddc.begin(ddcSdaPin, ddcSclPin)) {
+        //     Serial.println("Unable to find DDC/CI");
+        // }
+
+        // Write HIGH to SYNC pin for Generic DAC mode
+        pinMode(syncPin, OUTPUT);
+        digitalWrite(syncPin, HIGH);
 
         // Set output pins
         pinMode(hsyncPin, OUTPUT);
         pinMode(vsyncPin, OUTPUT);
         pinMode(blankPin, OUTPUT);
         pinMode(dacClk, OUTPUT);
-        pinMode(syncPin, OUTPUT);
-        pinMode(leB, OUTPUT);
-        pinMode(leG, OUTPUT);
-        pinMode(leR, OUTPUT);
+        pinMode(leBPin, OUTPUT);
+        pinMode(leGPin, OUTPUT);
+        pinMode(leRPin, OUTPUT);
         for (int i = 0; i < 8; ++i)
             pinMode(colorPins[i], OUTPUT);
+    }
 
-        // Start timers and attach first interrupt
-        hTimer = timerBegin(3, 1, true);
-        vTimer = timerBegin(2, 1, true);
+    void setup()
+    {
+        // Reset signals
+        digitalWrite(hsyncPin, LOW);
+        digitalWrite(vsyncPin, LOW);
+        digitalWrite(blankPin, HIGH);
+        digitalWrite(dacClk, LOW);
+        digitalWrite(leBPin, LOW);
+        digitalWrite(leGPin, LOW);
+        digitalWrite(leRPin, LOW);
 
-        timerAttachInterrupt(hTimer, &writePixel, true);
-        timerAlarmWrite(hTimer, 80.0 * VGA480p.hPixel, true);
-        timerAlarmEnable(hTimer);
+        // Pixel clock interrupt
+        if (!hPixelTimer) {
+            hPixelTimer = timerBegin(1, 2, true);
+            Serial.println("Pixel clock timer started");
+        }
+
+        // Horizontal sync interrupt
+        if (!hSyncTimer) {
+            hSyncTimer = timerBegin(3, 2, true);
+            timerAttachInterrupt(hSyncTimer, &hSyncInt, false);
+            timerAlarmWrite(
+                    hSyncTimer, 40.0 * VGA480p.xres * VGA480p.hPixel, true);
+            timerAlarmEnable(hSyncTimer);
+            Serial.println("Horizontal sync timer started");
+        }
+
+        // Vertical sync interrupt
+        if (!vSyncTimer) {
+            vSyncTimer = timerBegin(2, 2, true);
+            timerAttachInterrupt(vSyncTimer, &vSyncInt, false);
+            timerAlarmWrite(
+                    vSyncTimer, 40000.0 * VGA480p.yres * VGA480p.vLine, true);
+            timerAlarmEnable(vSyncTimer);
+            Serial.println("Vertical sync timer started");
+        }
+
+        // Reset timers
+        timerRestart(hSyncTimer);
+        timerRestart(vSyncTimer);
+        timerRestart(hPixelTimer);
+        ticksElapsed = crtTicks = 0;
     }
 
     void getMonitorResolution(int *width, int *height)
@@ -98,129 +179,6 @@ public:
         *width  = ddc.getVCP(0x22);
         *height = ddc.getVCP(0x32);
     }
-
-    // ─── Interrupts
-    // ──────────────────────────────────────────────────────
-
-private:
-    static const int hsyncPin = 1;
-    static const int vsyncPin = 2;
-    static const int blankPin = 42;
-    static const int dacClk   = 41;
-    static const int syncPin  = 38;
-
-    static const int DDC_SDA = 40;
-    static const int DDC_SCL = 39;
-
-    static const int leB = 13;
-    static const int leG = 14;
-    static const int leR = 40;
-    static const int colorPins[8];
-    static const int colorPinsMask;
-
-    static int xres, xcrt;
-    static int yres, ycrt;
-
-    static hw_timer_t *hTimer;
-    static hw_timer_t *vTimer;
-
-public:
-    static void IRAM_ATTR writeByteToRegister(int latch, unsigned char byte)
-    {
-        unsigned int mask = 0;
-        for (int i = 0; i < 8; ++i, byte >>= 1) {
-            mask |= (1u << colorPins[i]) & (byte & 1u);
-        }
-
-        REG_WRITE(GPIO_OUT_W1TC_REG, colorPinsMask);
-        digitalWrite(latch, HIGH);
-        REG_WRITE(GPIO_OUT_W1TS_REG, mask & colorPinsMask);
-        //! TODO: insert delay here
-        digitalWrite(latch, LOW);
-    }
-
-    static void IRAM_ATTR writePixel()
-    {
-        Color pixel = image.get(xcrt, ycrt);
-        writeByteToRegister(leR, pixel.r);
-        writeByteToRegister(leG, pixel.g);
-        writeByteToRegister(leB, pixel.b);
-
-        // advance to next pixel
-        if (++ycrt >= yres) {
-            // line ended
-            ++xcrt, ycrt = 0;
-            timerAlarmDisable(hTimer);
-            timerDetachInterrupt(hTimer);
-            timerAttachInterrupt(hTimer, &hFrontPorchInt, true);
-            timerAlarmWrite(hTimer, 80.0 * VGA480p.hFrontPorch, true);
-            timerAlarmEnable(hTimer);
-        }
-    }
-
-    static void IRAM_ATTR hFrontPorchInt()
-    {
-        timerAlarmDisable(hTimer);
-        timerDetachInterrupt(hTimer);
-        timerAttachInterrupt(hTimer, &hSyncInt, true);
-        timerAlarmWrite(hTimer, 80.0 * VGA480p.hSyncTime, true);
-        timerAlarmEnable(hTimer);
-    }
-
-    static void IRAM_ATTR hSyncInt()
-    {
-        timerAlarmDisable(hTimer);
-        timerDetachInterrupt(hTimer);
-        timerAttachInterrupt(hTimer, &hBackPorchInt, true);
-        timerAlarmWrite(hTimer, 80.0 * VGA480p.hBackPorch, true);
-        timerAlarmEnable(hTimer);
-    }
-
-    static void IRAM_ATTR hBackPorchInt()
-    {
-        if (xcrt >= xres) {
-            // frame ended
-            xcrt = 0, ycrt = 0;
-            timerAlarmDisable(hTimer);
-            timerDetachInterrupt(hTimer);
-            timerAttachInterrupt(vTimer, &vFrontPorchInt, true);
-            timerAlarmWrite(vTimer, 80.0 * VGA480p.vFrontPorch, true);
-            timerAlarmEnable(vTimer);
-        }
-        else {
-            // start next line
-            timerAlarmDisable(hTimer);
-            timerDetachInterrupt(hTimer);
-            timerAttachInterrupt(hTimer, &writePixel, true);
-            timerAlarmWrite(hTimer, 80.0 * VGA480p.hPixel, true);
-            timerAlarmEnable(hTimer);
-        }
-    }
-
-    static void IRAM_ATTR vFrontPorchInt()
-    {
-        timerAlarmDisable(vTimer);
-        timerDetachInterrupt(vTimer);
-        timerAttachInterrupt(vTimer, &vSyncInt, true);
-        timerAlarmWrite(vTimer, 80.0 * VGA480p.vSyncTime, true);
-        timerAlarmEnable(vTimer);
-    }
-
-    static void IRAM_ATTR vSyncInt()
-    {
-        timerAlarmDisable(vTimer);
-        timerDetachInterrupt(vTimer);
-        timerAttachInterrupt(vTimer, &vBackPorchInt, true);
-        timerAlarmWrite(vTimer, 80.0 * VGA480p.vBackPorch, true);
-        timerAlarmEnable(vTimer);
-    }
-
-    static void IRAM_ATTR vBackPorchInt()
-    {
-        timerAlarmDisable(vTimer);
-        timerDetachInterrupt(vTimer);
-        timerAttachInterrupt(hTimer, &writePixel, true);
-        timerAlarmWrite(hTimer, 80.0 * VGA480p.hPixel, true);
-        timerAlarmEnable(hTimer);
-    }
 };
+
+extern VGASignal vga;

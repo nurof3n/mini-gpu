@@ -19,9 +19,6 @@ WebServer   server(80);
 const int   maxUploadIter = 5;  // used to slow down the upload speed to
                                 // avoid watchdog reset
 
-// VGA class
-VGASignal vga(640, 480, (Color *) malloc(640 * 480 * sizeof(Color)));
-
 void handleListDir()
 {
     String dirname = "/";
@@ -90,12 +87,20 @@ void handleDraw()
     String filename = server.arg("file");
     Serial.printf("Drawing file: %s\n", filename.c_str());
 
-    if (!drawFile(filename.c_str())) {
-        server.send(404, "text/json", "{\"message\":\"File not found\"}");
+    // Load png
+    if (!decodePng(filename.c_str())) {
+        Serial.println("Failed to load image");
+        server.send(500, "text/json", "{\"message\":\"Failed to load image\"}");
         return;
     }
+    else {
+        Serial.println("Image loaded");
 
-    server.send(200, "text/json", "{\"message\":\"File drawn\"}");
+        // Start VGA emulator
+        vga.setup();
+    }
+
+    server.send(200, "text/json", "{\"message\":\"Image loaded\"}");
 }
 
 void handleRename()
@@ -253,7 +258,7 @@ void handleWipe()
 
 void handleGetMonitorDetails()
 {
-    int width, height;
+    int width = 0, height = 0;
     vga.getMonitorResolution(&width, &height);
     server.send(200, "text/json",
             "{\"width\":" + String(width) + ",\"height\":" + String(height)
